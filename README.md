@@ -1,3 +1,5 @@
+<img width="448" height="285" alt="image" src="https://github.com/user-attachments/assets/c00b0852-2848-425b-8b18-a5b0b97f2112" />
+
 # FrameScope
 
 FrameScope is a Windows desktop performance recorder for FPS, low FPS, CPU/GPU usage, temperature, memory, VRAM, and GPU power.
