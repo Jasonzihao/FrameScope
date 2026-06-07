@@ -24,13 +24,160 @@ import matplotlib.pyplot as plt
 import psutil
 import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 
 APP_NAME = "FrameScope"
 SAMPLE_INTERVAL_SECONDS = 1.0
 MAX_VISIBLE_POINTS = 180
 TEMP_REFRESH_SECONDS = 5.0
+DEFAULT_SETTINGS = {
+    "output_dir": "records",
+    "language": "zh",
+}
+
+I18N = {
+    "zh": {
+        "subtitle": "点击开始记录，点击结束生成 CSV、图表和 HTML 报告。",
+        "idle": "待机",
+        "recording": "REC",
+        "starting": "启动中...",
+        "generating": "生成中...",
+        "start": "开始",
+        "end": "结束并生成",
+        "settings": "设置",
+        "open_records": "打开记录目录",
+        "fps": "实时 FPS",
+        "low": "1% Low",
+        "cpu": "CPU 占用",
+        "gpu": "GPU 占用",
+        "cpu_temp": "CPU 温度",
+        "gpu_temp": "GPU 温度",
+        "usage": "CPU / GPU 使用率",
+        "temperature": "温度",
+        "memory": "内存 / 显存",
+        "output": "输出",
+        "gpu_ok": "GPU: nvidia-smi 已连接",
+        "gpu_missing": "GPU: 未检测到 nvidia-smi",
+        "fps_ok": "FPS: PresentMon 已连接",
+        "fps_missing": "FPS: 未检测到 PresentMon.exe",
+        "fps_admin": "FPS: 需要管理员权限",
+        "admin_title": "需要管理员权限",
+        "admin_message": "FPS 采集依赖 Windows ETW，需要管理员权限。是否重启并请求权限？",
+        "no_recording": "当前没有正在记录的会话。",
+        "recording_active": "记录中不能修改设置。",
+        "report_ready": "报告已生成：",
+        "settings_title": "设置",
+        "output_dir": "数据保存位置",
+        "browse": "选择",
+        "language": "语言",
+        "save": "保存",
+        "cancel": "取消",
+        "saved": "设置已保存。",
+        "language_zh": "中文",
+        "language_en": "English",
+        "report_title": "性能报告",
+        "created": "生成时间",
+        "duration": "记录时长",
+        "samples": "采样点",
+        "avg_fps": "平均 FPS",
+        "avg_cpu": "平均 CPU",
+        "avg_gpu": "平均 GPU",
+        "metric": "指标",
+        "average": "平均",
+        "minimum": "最低",
+        "maximum": "最高",
+        "cpu_usage": "CPU 占用",
+        "gpu_usage": "GPU 占用",
+    },
+    "en": {
+        "subtitle": "Press Start to record, then End to export CSV, charts, and an HTML report.",
+        "idle": "Idle",
+        "recording": "REC",
+        "starting": "Starting...",
+        "generating": "Generating...",
+        "start": "Start",
+        "end": "End & Export",
+        "settings": "Settings",
+        "open_records": "Open Data Folder",
+        "fps": "Live FPS",
+        "low": "1% Low",
+        "cpu": "CPU Usage",
+        "gpu": "GPU Usage",
+        "cpu_temp": "CPU Temp",
+        "gpu_temp": "GPU Temp",
+        "usage": "CPU / GPU Usage",
+        "temperature": "Temperature",
+        "memory": "Memory / VRAM",
+        "output": "Output",
+        "gpu_ok": "GPU: nvidia-smi connected",
+        "gpu_missing": "GPU: nvidia-smi not found",
+        "fps_ok": "FPS: PresentMon connected",
+        "fps_missing": "FPS: PresentMon.exe not found",
+        "fps_admin": "FPS: administrator required",
+        "admin_title": "Administrator Required",
+        "admin_message": "FPS capture uses Windows ETW and needs administrator permission. Restart with elevation now?",
+        "no_recording": "No recording session is active.",
+        "recording_active": "Settings cannot be changed while recording.",
+        "report_ready": "Report generated:",
+        "settings_title": "Settings",
+        "output_dir": "Data folder",
+        "browse": "Browse",
+        "language": "Language",
+        "save": "Save",
+        "cancel": "Cancel",
+        "saved": "Settings saved.",
+        "language_zh": "中文",
+        "language_en": "English",
+        "report_title": "Performance Report",
+        "created": "Created",
+        "duration": "Duration",
+        "samples": "Samples",
+        "avg_fps": "Average FPS",
+        "avg_cpu": "Average CPU",
+        "avg_gpu": "Average GPU",
+        "metric": "Metric",
+        "average": "Average",
+        "minimum": "Minimum",
+        "maximum": "Maximum",
+        "cpu_usage": "CPU Usage",
+        "gpu_usage": "GPU Usage",
+    },
+}
+
+
+def app_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def settings_path() -> Path:
+    return app_base_dir() / "framescope_settings.json"
+
+
+def load_settings() -> dict[str, str]:
+    settings = DEFAULT_SETTINGS.copy()
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return settings
+    if isinstance(data, dict):
+        output_dir = data.get("output_dir")
+        language = data.get("language")
+        if isinstance(output_dir, str) and output_dir.strip():
+            settings["output_dir"] = output_dir
+        if language in I18N:
+            settings["language"] = language
+    return settings
+
+
+def save_settings(settings: dict[str, str]) -> None:
+    settings_path().write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def tr(language: str, key: str) -> str:
+    return I18N.get(language, I18N["zh"]).get(key, I18N["zh"].get(key, key))
 
 
 def is_windows_admin() -> bool:
@@ -516,10 +663,17 @@ class MetricsRecorder:
 
 
 class ReportWriter:
-    def __init__(self, output_dir: Path, samples: list[MetricSample], frame_times_ms: list[float]) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        samples: list[MetricSample],
+        frame_times_ms: list[float],
+        language: str = "zh",
+    ) -> None:
         self.output_dir = output_dir
         self.samples = samples
         self.frame_times_ms = frame_times_ms
+        self.language = language if language in I18N else "zh"
 
     def write_all(self) -> dict[str, str]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -619,8 +773,8 @@ class ReportWriter:
         figure.patch.set_facecolor("#101316")
         series = [
             ("FPS", "fps", "#58d68d", axes[0][0]),
-            ("CPU / GPU Usage %", ("cpu_percent", "gpu_percent"), "#5dade2", axes[0][1]),
-            ("Temperature C", ("cpu_temp_c", "gpu_temp_c"), "#f5b041", axes[1][0]),
+            (f"{tr(self.language, 'usage')} %", ("cpu_percent", "gpu_percent"), "#5dade2", axes[0][1]),
+            (f"{tr(self.language, 'temperature')} C", ("cpu_temp_c", "gpu_temp_c"), "#f5b041", axes[1][0]),
             ("GPU Power W", "gpu_power_w", "#af7ac5", axes[1][1]),
         ]
         elapsed = [sample.elapsed_s / 60 for sample in self.samples]
@@ -650,8 +804,10 @@ class ReportWriter:
         gpu = summary["gpu_percent"]
         cpu_temp = summary["cpu_temp_c"]
         gpu_temp = summary["gpu_temp_c"]
+        language = self.language
+        html_lang = "zh-CN" if language == "zh" else "en"
         html = f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="{html_lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -696,25 +852,25 @@ class ReportWriter:
 <main>
   <header>
     <div>
-      <h1>{APP_NAME} 性能报告</h1>
-      <p>生成时间 {summary["created_at"]}，记录时长 {summary["duration_seconds"]} 秒，共 {summary["sample_count"]} 个采样点。</p>
+      <h1>{APP_NAME} {tr(language, "report_title")}</h1>
+      <p>{tr(language, "created")} {summary["created_at"]} · {tr(language, "duration")} {summary["duration_seconds"]} s · {tr(language, "samples")} {summary["sample_count"]}</p>
     </div>
   </header>
   <section class="grid">
-    <div class="card"><div class="label">平均 FPS</div><div class="value">{format_metric(fps["avg"], "", 1)}</div></div>
+    <div class="card"><div class="label">{tr(language, "avg_fps")}</div><div class="value">{format_metric(fps["avg"], "", 1)}</div></div>
     <div class="card"><div class="label">1% Low FPS</div><div class="value">{format_metric(fps["one_percent_low"], "", 1)}</div></div>
-    <div class="card"><div class="label">平均 CPU</div><div class="value">{format_metric(cpu["avg"], "%", 1)}</div></div>
-    <div class="card"><div class="label">平均 GPU</div><div class="value">{format_metric(gpu["avg"], "%", 1)}</div></div>
+    <div class="card"><div class="label">{tr(language, "avg_cpu")}</div><div class="value">{format_metric(cpu["avg"], "%", 1)}</div></div>
+    <div class="card"><div class="label">{tr(language, "avg_gpu")}</div><div class="value">{format_metric(gpu["avg"], "%", 1)}</div></div>
   </section>
   <img class="chart" src="{chart_name}" alt="Performance charts">
   <table>
-    <thead><tr><th>指标</th><th>平均</th><th>最低</th><th>最高</th><th>P95</th></tr></thead>
+    <thead><tr><th>{tr(language, "metric")}</th><th>{tr(language, "average")}</th><th>{tr(language, "minimum")}</th><th>{tr(language, "maximum")}</th><th>P95</th></tr></thead>
     <tbody>
       <tr><td>FPS</td><td>{format_metric(fps["avg"], "", 2)}</td><td>{format_metric(fps["min"], "", 2)}</td><td>{format_metric(fps["max"], "", 2)}</td><td>{format_metric(fps["p95"], "", 2)}</td></tr>
-      <tr><td>CPU 占用</td><td>{format_metric(cpu["avg"], "%", 2)}</td><td>{format_metric(cpu["min"], "%", 2)}</td><td>{format_metric(cpu["max"], "%", 2)}</td><td>{format_metric(cpu["p95"], "%", 2)}</td></tr>
-      <tr><td>GPU 占用</td><td>{format_metric(gpu["avg"], "%", 2)}</td><td>{format_metric(gpu["min"], "%", 2)}</td><td>{format_metric(gpu["max"], "%", 2)}</td><td>{format_metric(gpu["p95"], "%", 2)}</td></tr>
-      <tr><td>CPU 温度</td><td>{format_metric(cpu_temp["avg"], " C", 2)}</td><td>{format_metric(cpu_temp["min"], " C", 2)}</td><td>{format_metric(cpu_temp["max"], " C", 2)}</td><td>{format_metric(cpu_temp["p95"], " C", 2)}</td></tr>
-      <tr><td>GPU 温度</td><td>{format_metric(gpu_temp["avg"], " C", 2)}</td><td>{format_metric(gpu_temp["min"], " C", 2)}</td><td>{format_metric(gpu_temp["max"], " C", 2)}</td><td>{format_metric(gpu_temp["p95"], " C", 2)}</td></tr>
+      <tr><td>{tr(language, "cpu_usage")}</td><td>{format_metric(cpu["avg"], "%", 2)}</td><td>{format_metric(cpu["min"], "%", 2)}</td><td>{format_metric(cpu["max"], "%", 2)}</td><td>{format_metric(cpu["p95"], "%", 2)}</td></tr>
+      <tr><td>{tr(language, "gpu_usage")}</td><td>{format_metric(gpu["avg"], "%", 2)}</td><td>{format_metric(gpu["min"], "%", 2)}</td><td>{format_metric(gpu["max"], "%", 2)}</td><td>{format_metric(gpu["p95"], "%", 2)}</td></tr>
+      <tr><td>{tr(language, "cpu_temp")}</td><td>{format_metric(cpu_temp["avg"], " C", 2)}</td><td>{format_metric(cpu_temp["min"], " C", 2)}</td><td>{format_metric(cpu_temp["max"], " C", 2)}</td><td>{format_metric(cpu_temp["p95"], " C", 2)}</td></tr>
+      <tr><td>{tr(language, "gpu_temp")}</td><td>{format_metric(gpu_temp["avg"], " C", 2)}</td><td>{format_metric(gpu_temp["min"], " C", 2)}</td><td>{format_metric(gpu_temp["max"], " C", 2)}</td><td>{format_metric(gpu_temp["p95"], " C", 2)}</td></tr>
     </tbody>
   </table>
 </main>
@@ -737,24 +893,42 @@ class MetricCard(ttk.Frame):
     def set_value(self, value: str) -> None:
         self.value.configure(text=value)
 
+    def set_title(self, title: str) -> None:
+        self.title.configure(text=title)
+
 
 class MonitorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self.settings = load_settings()
+        self.language = self.settings["language"]
         self.root.title(APP_NAME)
         self.root.geometry("1180x760")
         self.root.minsize(980, 650)
         self.root.configure(bg="#0f1216")
-        self.session_dir = Path("records") / datetime.now().strftime("session_%Y%m%d_%H%M%S")
-        self.recorder = MetricsRecorder(self.session_dir)
+        self.session_dir: Path | None = None
+        self.recorder: MetricsRecorder | None = None
         self.visible_samples: deque[MetricSample] = deque(maxlen=MAX_VISIBLE_POINTS)
         self.report_paths: dict[str, str] | None = None
+        self.recording = False
         self.closed = False
+        self.gpu_available = NvidiaSmiReader().available
+        self.presentmon_available = PresentMonReader(app_base_dir()).available
         self._configure_style()
         self._build_ui()
-        self.recorder.start()
-        self.root.protocol("WM_DELETE_WINDOW", self.finish_and_close)
+        self.apply_language()
+        self.end_button.state(["disabled"])
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._update_loop()
+
+    def text(self, key: str) -> str:
+        return tr(self.language, key)
+
+    def output_root(self) -> Path:
+        configured = Path(self.settings["output_dir"]).expanduser()
+        if configured.is_absolute():
+            return configured
+        return app_base_dir() / configured
 
     def _configure_style(self) -> None:
         style = ttk.Style()
@@ -768,40 +942,45 @@ class MonitorApp:
         style.configure("CardValue.TLabel", background="#171c22", foreground="#f7fbff", font=("Segoe UI", 25, "bold"))
         style.configure("Action.TButton", background="#2f80ed", foreground="#ffffff", borderwidth=0, padding=(14, 9), font=("Segoe UI", 10, "bold"))
         style.map("Action.TButton", background=[("active", "#3c8bf1")])
+        style.configure("Danger.TButton", background="#c0392b", foreground="#ffffff", borderwidth=0, padding=(14, 9), font=("Segoe UI", 10, "bold"))
+        style.map("Danger.TButton", background=[("active", "#d64a3d")])
         style.configure("Ghost.TButton", background="#202832", foreground="#d6dbdf", borderwidth=0, padding=(12, 9))
         style.map("Ghost.TButton", background=[("active", "#2a3440")])
 
     def _build_ui(self) -> None:
-        container = ttk.Frame(self, style="Root.TFrame") if False else tk.Frame(self.root, bg="#0f1216")
+        container = tk.Frame(self.root, bg="#0f1216")
         container.pack(fill="both", expand=True, padx=24, pady=22)
         header = tk.Frame(container, bg="#0f1216")
         header.pack(fill="x")
         title_area = tk.Frame(header, bg="#0f1216")
         title_area.pack(side="left", fill="x", expand=True)
         ttk.Label(title_area, text=APP_NAME, style="Header.TLabel").pack(anchor="w")
-        ttk.Label(
-            title_area,
-            text="打开即开始记录，关闭时自动生成 CSV、图表和 HTML 报告。",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(4, 0))
+        self.subtitle_label = ttk.Label(title_area, style="Muted.TLabel")
+        self.subtitle_label.pack(anchor="w", pady=(4, 0))
         actions = tk.Frame(header, bg="#0f1216")
         actions.pack(side="right")
-        self.status_label = ttk.Label(actions, text="REC 00:00", style="Status.TLabel")
+        self.status_label = ttk.Label(actions, style="Status.TLabel")
         self.status_label.pack(side="left", padx=(0, 10))
-        ttk.Button(actions, text="打开记录目录", style="Ghost.TButton", command=self.open_records_dir).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="结束并生成", style="Action.TButton", command=self.finish_and_close).pack(side="left")
+        self.open_button = ttk.Button(actions, style="Ghost.TButton", command=self.open_records_dir)
+        self.open_button.pack(side="left", padx=(0, 8))
+        self.settings_button = ttk.Button(actions, style="Ghost.TButton", command=self.open_settings)
+        self.settings_button.pack(side="left", padx=(0, 8))
+        self.start_button = ttk.Button(actions, style="Action.TButton", command=self.start_recording)
+        self.start_button.pack(side="left", padx=(0, 8))
+        self.end_button = ttk.Button(actions, style="Danger.TButton", command=self.finish_recording)
+        self.end_button.pack(side="left")
 
         cards = tk.Frame(container, bg="#0f1216")
         cards.pack(fill="x", pady=(22, 18))
         for column in range(6):
             cards.columnconfigure(column, weight=1, uniform="cards")
         self.cards = {
-            "fps": MetricCard(cards, "实时 FPS", "#58d68d"),
-            "low": MetricCard(cards, "1% Low", "#f5b041"),
-            "cpu": MetricCard(cards, "CPU 占用", "#5dade2"),
-            "gpu": MetricCard(cards, "GPU 占用", "#af7ac5"),
-            "cpu_temp": MetricCard(cards, "CPU 温度", "#ec7063"),
-            "gpu_temp": MetricCard(cards, "GPU 温度", "#48c9b0"),
+            "fps": MetricCard(cards, "", "#58d68d"),
+            "low": MetricCard(cards, "", "#f5b041"),
+            "cpu": MetricCard(cards, "", "#5dade2"),
+            "gpu": MetricCard(cards, "", "#af7ac5"),
+            "cpu_temp": MetricCard(cards, "", "#ec7063"),
+            "gpu_temp": MetricCard(cards, "", "#48c9b0"),
         }
         for index, card in enumerate(self.cards.values()):
             card.grid(row=0, column=index, sticky="nsew", padx=6)
@@ -811,17 +990,22 @@ class MonitorApp:
         self.figure, self.axes = plt.subplots(2, 2, figsize=(11, 6), dpi=100)
         self.figure.patch.set_facecolor("#151a1f")
         self.lines: dict[str, object] = {}
+        self.axis_title_keys = {
+            self.axes[0][0]: "fps",
+            self.axes[0][1]: "usage",
+            self.axes[1][0]: "temperature",
+            self.axes[1][1]: "memory",
+        }
         axis_specs = [
-            (self.axes[0][0], "FPS", [("fps", "#58d68d", "FPS")]),
-            (self.axes[0][1], "CPU / GPU 使用率", [("cpu_percent", "#5dade2", "CPU"), ("gpu_percent", "#af7ac5", "GPU")]),
-            (self.axes[1][0], "温度", [("cpu_temp_c", "#ec7063", "CPU"), ("gpu_temp_c", "#48c9b0", "GPU")]),
-            (self.axes[1][1], "内存 / 显存", [("memory_percent", "#f5b041", "RAM %"), ("gpu_memory_used_mb", "#85c1e9", "VRAM MB")]),
+            (self.axes[0][0], [("fps", "#58d68d", "FPS")]),
+            (self.axes[0][1], [("cpu_percent", "#5dade2", "CPU"), ("gpu_percent", "#af7ac5", "GPU")]),
+            (self.axes[1][0], [("cpu_temp_c", "#ec7063", "CPU"), ("gpu_temp_c", "#48c9b0", "GPU")]),
+            (self.axes[1][1], [("memory_percent", "#f5b041", "RAM %"), ("gpu_memory_used_mb", "#85c1e9", "VRAM MB")]),
         ]
-        for axis, title, line_specs in axis_specs:
+        for axis, line_specs in axis_specs:
             axis.set_facecolor("#151a1f")
             axis.grid(True, color="#2a3138", linewidth=0.8)
             axis.tick_params(colors="#9aa7b2")
-            axis.set_title(title, color="#eef2f5", fontsize=11)
             for key, color, label in line_specs:
                 line, = axis.plot([], [], color=color, linewidth=2, label=label)
                 self.lines[key] = line
@@ -832,39 +1016,186 @@ class MonitorApp:
 
         footer = tk.Frame(container, bg="#0f1216")
         footer.pack(fill="x", pady=(12, 0))
-        self.source_label = ttk.Label(footer, text=self._source_text(), style="Muted.TLabel")
+        self.source_label = ttk.Label(footer, style="Muted.TLabel")
         self.source_label.pack(side="left")
-        self.output_label = ttk.Label(footer, text=f"输出：{self.session_dir}", style="Muted.TLabel")
+        self.output_label = ttk.Label(footer, style="Muted.TLabel")
         self.output_label.pack(side="right")
 
+    def apply_language(self) -> None:
+        self.subtitle_label.configure(text=self.text("subtitle"))
+        self.open_button.configure(text=self.text("open_records"))
+        self.settings_button.configure(text=self.text("settings"))
+        self.start_button.configure(text=self.text("start"))
+        self.end_button.configure(text=self.text("end"))
+        for key, card in self.cards.items():
+            card.set_title(self.text(key))
+        for axis, key in self.axis_title_keys.items():
+            axis.set_title(self.text(key), color="#eef2f5", fontsize=11)
+        self.output_label.configure(text=f"{self.text('output')}: {self.output_root()}")
+        self.source_label.configure(text=self._source_text())
+        self._update_status_label()
+        self.canvas.draw_idle()
+
     def _source_text(self) -> str:
-        gpu_status = "GPU: nvidia-smi 已连接" if self.recorder.gpu_reader.available else "GPU: 未检测到 nvidia-smi"
-        fps_status = "FPS: PresentMon 已连接" if self.recorder.fps_reader.available else "FPS: 未检测到 PresentMon.exe"
-        if self.recorder.fps_reader.available and not is_windows_admin():
-            fps_status = "FPS: 需要管理员权限"
+        gpu_available = self.recorder.gpu_reader.available if self.recorder else self.gpu_available
+        fps_available = self.recorder.fps_reader.available if self.recorder else self.presentmon_available
+        gpu_status = self.text("gpu_ok") if gpu_available else self.text("gpu_missing")
+        if fps_available and not is_windows_admin():
+            fps_status = self.text("fps_admin")
+        else:
+            fps_status = self.text("fps_ok") if fps_available else self.text("fps_missing")
         return f"{gpu_status}    {fps_status}"
 
+    def _update_status_label(self) -> None:
+        if self.recording and self.recorder:
+            elapsed = int(time.monotonic() - self.recorder.started_at)
+            self.status_label.configure(text=f"{self.text('recording')} {elapsed // 60:02d}:{elapsed % 60:02d}")
+        else:
+            self.status_label.configure(text=self.text("idle"))
+
+    def start_recording(self) -> None:
+        if self.recording:
+            return
+        if self.presentmon_available and not is_windows_admin():
+            if messagebox.askyesno(self.text("admin_title"), self.text("admin_message")):
+                relaunch_as_admin()
+                return
+        self.status_label.configure(text=self.text("starting"))
+        self.root.update_idletasks()
+        self.session_dir = self.output_root() / datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        self.recorder = MetricsRecorder(self.session_dir)
+        self.visible_samples.clear()
+        self.report_paths = None
+        self.reset_cards()
+        self.clear_chart()
+        self.recorder.start()
+        self.gpu_available = self.recorder.gpu_reader.available
+        self.presentmon_available = self.recorder.fps_reader.available
+        self.recording = True
+        self.start_button.state(["disabled"])
+        self.end_button.state(["!disabled"])
+        self.settings_button.state(["disabled"])
+        self.output_label.configure(text=f"{self.text('output')}: {self.session_dir}")
+        self.source_label.configure(text=self._source_text())
+
+    def finish_recording(self) -> None:
+        if not self.recording or not self.recorder or not self.session_dir:
+            messagebox.showinfo(APP_NAME, self.text("no_recording"))
+            return
+        self.status_label.configure(text=self.text("generating"))
+        self.root.update_idletasks()
+        self.recorder.stop()
+        writer = ReportWriter(
+            self.session_dir,
+            self.recorder.samples,
+            self.recorder.fps_reader.frame_times_ms,
+            self.language,
+        )
+        self.report_paths = writer.write_all()
+        self.recording = False
+        self.start_button.state(["!disabled"])
+        self.end_button.state(["disabled"])
+        self.settings_button.state(["!disabled"])
+        self._update_status_label()
+        self.source_label.configure(text=self._source_text())
+        try:
+            os.startfile(Path(self.report_paths["html"]).resolve())
+        except OSError:
+            pass
+        messagebox.showinfo(APP_NAME, f"{self.text('report_ready')}\n{self.report_paths['html']}")
+
+    def open_settings(self) -> None:
+        if self.recording:
+            messagebox.showinfo(APP_NAME, self.text("recording_active"))
+            return
+        window = tk.Toplevel(self.root)
+        window.title(self.text("settings_title"))
+        window.configure(bg="#0f1216")
+        window.resizable(False, False)
+        window.transient(self.root)
+        window.grab_set()
+        frame = tk.Frame(window, bg="#0f1216", padx=18, pady=18)
+        frame.pack(fill="both", expand=True)
+        path_var = tk.StringVar(value=str(self.output_root()))
+        language_var = tk.StringVar(value=self.language)
+
+        ttk.Label(frame, text=self.text("output_dir"), style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        path_entry = ttk.Entry(frame, textvariable=path_var, width=54)
+        path_entry.grid(row=1, column=0, sticky="ew", padx=(0, 10))
+
+        def browse() -> None:
+            selected = filedialog.askdirectory(initialdir=path_var.get() or str(app_base_dir()))
+            if selected:
+                path_var.set(selected)
+
+        ttk.Button(frame, text=self.text("browse"), style="Ghost.TButton", command=browse).grid(row=1, column=1, sticky="ew")
+        ttk.Label(frame, text=self.text("language"), style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(18, 6))
+        language_box = ttk.Combobox(
+            frame,
+            textvariable=language_var,
+            values=["zh", "en"],
+            state="readonly",
+            width=12,
+        )
+        language_box.grid(row=3, column=0, sticky="w")
+        hint = ttk.Label(frame, text="zh = 中文    en = English", style="Muted.TLabel")
+        hint.grid(row=3, column=0, sticky="w", padx=(110, 0))
+
+        buttons = tk.Frame(frame, bg="#0f1216")
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(22, 0))
+
+        def save() -> None:
+            output_dir = path_var.get().strip()
+            if not output_dir:
+                output_dir = str(app_base_dir() / DEFAULT_SETTINGS["output_dir"])
+            language = language_var.get() if language_var.get() in I18N else "zh"
+            self.settings = {"output_dir": output_dir, "language": language}
+            self.language = language
+            save_settings(self.settings)
+            self.apply_language()
+            messagebox.showinfo(APP_NAME, self.text("saved"))
+            window.destroy()
+
+        ttk.Button(buttons, text=self.text("cancel"), style="Ghost.TButton", command=window.destroy).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text=self.text("save"), style="Action.TButton", command=save).pack(side="left")
+
     def _update_loop(self) -> None:
-        while True:
-            try:
-                sample = self.recorder.events.get_nowait()
-            except queue.Empty:
-                break
-            self.visible_samples.append(sample)
-        self._update_cards()
-        self._update_chart()
-        elapsed = int(time.monotonic() - self.recorder.started_at)
-        self.status_label.configure(text=f"REC {elapsed // 60:02d}:{elapsed % 60:02d}")
+        if self.recording and self.recorder:
+            while True:
+                try:
+                    sample = self.recorder.events.get_nowait()
+                except queue.Empty:
+                    break
+                self.visible_samples.append(sample)
+            self._update_cards()
+            self._update_chart()
+        self._update_status_label()
         self.source_label.configure(text=self._source_text())
         if not self.closed:
             self.root.after(1000, self._update_loop)
 
+    def reset_cards(self) -> None:
+        for card in self.cards.values():
+            card.set_value("--")
+
+    def clear_chart(self) -> None:
+        for line in self.lines.values():
+            line.set_data([], [])
+        for axis in self.axes.flat:
+            axis.relim()
+            axis.autoscale_view()
+            axis.set_xlim(0, MAX_VISIBLE_POINTS)
+        self.canvas.draw_idle()
+
     def _update_cards(self) -> None:
-        if not self.visible_samples:
+        if not self.visible_samples or not self.recorder:
             return
         latest = self.visible_samples[-1]
         all_fps = [sample.fps for sample in self.recorder.samples if numeric_value(sample.fps) is not None]
-        one_percent_low = ReportWriter(self.session_dir, [], [])._percentile_low([float(value) for value in all_fps], 0.01)
+        one_percent_low = ReportWriter(self.session_dir or self.output_root(), [], [], self.language)._percentile_low(
+            [float(value) for value in all_fps],
+            0.01,
+        )
         self.cards["fps"].set_value(format_metric(latest.fps, "", 1))
         self.cards["low"].set_value(format_metric(one_percent_low, "", 1))
         self.cards["cpu"].set_value(format_metric(latest.cpu_percent, "%", 0))
@@ -887,29 +1218,20 @@ class MonitorApp:
         self.canvas.draw_idle()
 
     def open_records_dir(self) -> None:
-        target = self.session_dir if self.session_dir.exists() else Path("records")
+        target = self.session_dir if self.session_dir and self.session_dir.exists() else self.output_root()
         target.mkdir(parents=True, exist_ok=True)
         os.startfile(target.resolve())
 
-    def finish_and_close(self) -> None:
+    def on_close(self) -> None:
         if self.closed:
             return
         self.closed = True
-        self.status_label.configure(text="生成中...")
-        self.root.update_idletasks()
-        self.recorder.stop()
-        writer = ReportWriter(self.session_dir, self.recorder.samples, self.recorder.fps_reader.frame_times_ms)
-        self.report_paths = writer.write_all()
-        try:
-            os.startfile(Path(self.report_paths["html"]).resolve())
-        except OSError:
-            pass
-        messagebox.showinfo(APP_NAME, f"报告已生成：\n{self.report_paths['html']}")
+        if self.recording:
+            self.finish_recording()
         self.root.destroy()
 
 
 def main() -> None:
-    relaunch_as_admin()
     root = tk.Tk()
     app = MonitorApp(root)
     root.mainloop()

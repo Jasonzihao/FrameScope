@@ -4,7 +4,7 @@
 a = Analysis(
     ['fps_monitor.py'],
     pathex=[],
-    binaries=[('tools/PresentMon/PresentMon.exe', '.')],
+    binaries=[('tools\\PresentMon\\PresentMon.exe', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
