@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FrameScope Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1216;
+      --panel: #171c22;
+      --line: #2b333c;
+      --text: #eef2f5;
+      --muted: #a8b3bd;
+      --green: #58d68d;
+      --blue: #5dade2;
+      --amber: #f5b041;
+      --red: #ec7063;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      background: radial-gradient(circle at 20% 0%, #18242a 0, transparent 28rem), var(--bg);
+      color: var(--text);
+    }
+    main { width: min(1180px, calc(100% - 40px)); margin: 32px auto 48px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: 0; }
+    p { color: var(--muted); margin: 0; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .card { background: color-mix(in srgb, var(--panel) 92%, black); border: 1px solid var(--line); border-radius: 8px; padding: 18px; }
+    .label { color: var(--muted); font-size: 13px; }
+    .value { font-size: 28px; font-weight: 700; margin-top: 8px; }
+    .chart { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #101316; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; overflow: hidden; border-radius: 8px; }
+    th, td { text-align: left; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; background: #151a1f; }
+    td { background: #12171c; }
+    @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } header { display: block; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>FrameScope 性能报告</h1>
+      <p>生成时间 2026-06-08T02:08:48，记录时长 27.15 秒，共 25 个采样点。</p>
+    </div>
+  </header>
+  <section class="grid">
+    <div class="card"><div class="label">平均 FPS</div><div class="value">26.4</div></div>
+    <div class="card"><div class="label">1% Low FPS</div><div class="value">2.0</div></div>
+    <div class="card"><div class="label">平均 CPU</div><div class="value">21.5%</div></div>
+    <div class="card"><div class="label">平均 GPU</div><div class="value">10.6%</div></div>
+  </section>
+  <img class="chart" src="charts.png" alt="Performance charts">
+  <table>
+    <thead><tr><th>指标</th><th>平均</th><th>最低</th><th>最高</th><th>P95</th></tr></thead>
+    <tbody>
+      <tr><td>FPS</td><td>26.37</td><td>4.70</td><td>56.30</td><td>52.65</td></tr>
+      <tr><td>CPU 占用</td><td>21.52%</td><td>0.00%</td><td>92.50%</td><td>85.00%</td></tr>
+      <tr><td>GPU 占用</td><td>10.56%</td><td>0.00%</td><td>34.00%</td><td>27.00%</td></tr>
+      <tr><td>CPU 温度</td><td>20.05 C</td><td>20.05 C</td><td>20.05 C</td><td>20.05 C</td></tr>
+      <tr><td>GPU 温度</td><td>40.80 C</td><td>40.00 C</td><td>41.00 C</td><td>41.00 C</td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>

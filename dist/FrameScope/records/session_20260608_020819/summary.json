@@ -1,0 +1,38 @@
+{
+  "app": "FrameScope",
+  "created_at": "2026-06-08T02:08:48",
+  "duration_seconds": 27.15,
+  "sample_count": 25,
+  "fps": {
+    "avg": 26.37,
+    "min": 4.7,
+    "max": 56.3,
+    "p95": 52.65,
+    "one_percent_low": 1.98,
+    "point_one_percent_low": 1.94
+  },
+  "cpu_percent": {
+    "avg": 21.52,
+    "min": 0.0,
+    "max": 92.5,
+    "p95": 85.0
+  },
+  "gpu_percent": {
+    "avg": 10.56,
+    "min": 0.0,
+    "max": 34.0,
+    "p95": 27.0
+  },
+  "cpu_temp_c": {
+    "avg": 20.05,
+    "min": 20.05,
+    "max": 20.05,
+    "p95": 20.05
+  },
+  "gpu_temp_c": {
+    "avg": 40.8,
+    "min": 40.0,
+    "max": 41.0,
+    "p95": 41.0
+  }
+}

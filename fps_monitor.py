@@ -1,4 +1,5 @@
 import csv
+import ctypes
 import json
 import math
 import os
@@ -30,6 +31,33 @@ APP_NAME = "FrameScope"
 SAMPLE_INTERVAL_SECONDS = 1.0
 MAX_VISIBLE_POINTS = 180
 TEMP_REFRESH_SECONDS = 5.0
+
+
+def is_windows_admin() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin() -> bool:
+    if os.name != "nt" or is_windows_admin():
+        return False
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = subprocess.list2cmdline(sys.argv[1:])
+    else:
+        executable = sys.executable
+        params = subprocess.list2cmdline([str(Path(__file__).resolve()), *sys.argv[1:]])
+    try:
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)
+    except Exception:
+        return False
+    if result > 32:
+        sys.exit(0)
+    return False
 
 
 @dataclass
@@ -228,6 +256,13 @@ class PresentMonReader:
         self.position = 0
         self.frame_times_ms: list[float] = []
         self._header: list[str] | None = None
+        self._lock = threading.Lock()
+        self._read_index = 0
+        self._stdout_thread: threading.Thread | None = None
+        self._capture_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._chunk_index = 0
+        self._wrote_master_header = False
 
     def _find_executable(self) -> str | None:
         candidates: list[Path] = []
@@ -255,16 +290,92 @@ class PresentMonReader:
     def start(self) -> None:
         if not self.executable:
             return
-        commands = [
-            [
+        self.active = True
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+        if self._stdout_thread:
+            self._stdout_thread.join(timeout=1)
+        if self._capture_thread:
+            self._capture_thread.join(timeout=5)
+        self.active = False
+
+    def read_current_fps(self) -> float | None:
+        with self._lock:
+            new_frame_times = self.frame_times_ms[self._read_index :]
+            self._read_index = len(self.frame_times_ms)
+            recent = self.frame_times_ms[-90:]
+        if new_frame_times:
+            average_frame_time = statistics.fmean(new_frame_times)
+            if average_frame_time > 0:
+                return 1000.0 / average_frame_time
+        if recent:
+            average_frame_time = statistics.fmean(recent)
+            return 1000.0 / average_frame_time if average_frame_time > 0 else None
+        return None
+
+    def _consume_stdout(self) -> None:
+        if not self.process or not self.process.stdout:
+            return
+        try:
+            with self.output_file.open("w", encoding="utf-8-sig", newline="") as file_handle:
+                for line in self.process.stdout:
+                    file_handle.write(line)
+                    file_handle.flush()
+                    self._parse_presentmon_line(line)
+        except OSError:
+            for line in self.process.stdout:
+                self._parse_presentmon_line(line)
+
+    def _parse_presentmon_line(self, line: str) -> None:
+        try:
+            row = next(csv.reader([line.strip()]))
+        except (csv.Error, StopIteration):
+            return
+        if not row:
+            return
+        lowered = [column.strip().lower() for column in row]
+        if "msbetweenpresents" in lowered or "msuntildisplayed" in lowered:
+            with self._lock:
+                self._header = row
+            return
+        with self._lock:
+            header = self._header
+        if header is None:
+            return
+        index = self._frame_time_index(header)
+        if index is None or index >= len(row):
+            return
+        value = numeric_value(row[index])
+        if value is not None and 0 < value < 1000:
+            with self._lock:
+                self.frame_times_ms.append(value)
+
+    def _capture_loop(self) -> None:
+        while not self._stop_event.is_set():
+            chunk_path = self.output_file.with_name(f"presentmon_{self._chunk_index:04d}.csv")
+            self._chunk_index += 1
+            command = [
                 self.executable,
                 "--output_file",
-                str(self.output_file),
+                str(chunk_path),
                 "--no_console_stats",
+                "--timed",
+                "2",
+                "--terminate_after_timed",
                 "--stop_existing_session",
-            ],
-        ]
-        for command in commands:
+            ]
             try:
                 self.process = subprocess.Popen(
                     command,
@@ -273,36 +384,45 @@ class PresentMonReader:
                     text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
-                time.sleep(0.8)
-                if self.process.poll() is None or self.output_file.exists():
-                    self.active = True
-                    return
+                self.process.wait(timeout=8)
             except Exception:
-                self.process = None
-        self.available = False
-        self.active = False
+                self.available = False
+                self.active = False
+                return
+            if chunk_path.exists():
+                self._parse_chunk_file(chunk_path)
+                try:
+                    chunk_path.unlink()
+                except OSError:
+                    pass
+            if self.process and self.process.returncode not in (0, None):
+                self.available = False
+                self.active = False
+                return
 
-    def stop(self) -> None:
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-        self.active = False
-
-    def read_current_fps(self) -> float | None:
-        new_frame_times = self._read_new_frame_times()
-        if new_frame_times:
-            self.frame_times_ms.extend(new_frame_times)
-            average_frame_time = statistics.fmean(new_frame_times)
-            if average_frame_time > 0:
-                return 1000.0 / average_frame_time
-        if self.frame_times_ms:
-            recent = self.frame_times_ms[-90:]
-            average_frame_time = statistics.fmean(recent)
-            return 1000.0 / average_frame_time if average_frame_time > 0 else None
-        return None
+    def _parse_chunk_file(self, path: Path) -> None:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return
+        if not lines:
+            return
+        try:
+            with self.output_file.open("a", encoding="utf-8-sig", newline="") as master:
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    is_header = "MsBetweenPresents" in line and "Application" in line
+                    if is_header and self._wrote_master_header:
+                        pass
+                    else:
+                        master.write(line + "\n")
+                        if is_header:
+                            self._wrote_master_header = True
+                    self._parse_presentmon_line(line)
+        except OSError:
+            for line in lines:
+                self._parse_presentmon_line(line)
 
     def _read_new_frame_times(self) -> list[float]:
         if not self.output_file.exists():
@@ -720,6 +840,8 @@ class MonitorApp:
     def _source_text(self) -> str:
         gpu_status = "GPU: nvidia-smi 已连接" if self.recorder.gpu_reader.available else "GPU: 未检测到 nvidia-smi"
         fps_status = "FPS: PresentMon 已连接" if self.recorder.fps_reader.available else "FPS: 未检测到 PresentMon.exe"
+        if self.recorder.fps_reader.available and not is_windows_admin():
+            fps_status = "FPS: 需要管理员权限"
         return f"{gpu_status}    {fps_status}"
 
     def _update_loop(self) -> None:
@@ -787,6 +909,7 @@ class MonitorApp:
 
 
 def main() -> None:
+    relaunch_as_admin()
     root = tk.Tk()
     app = MonitorApp(root)
     root.mainloop()
