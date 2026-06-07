@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_dynamic_libs
+
+binaries = [('tools\\PresentMon\\PresentMon.exe', '.')]
+binaries += collect_dynamic_libs('python3')
 
 
 a = Analysis(
     ['fps_monitor.py'],
     pathex=[],
-    binaries=[('tools\\PresentMon\\PresentMon.exe', '.')],
+    binaries=binaries,
     datas=[],
     hiddenimports=[],
     hookspath=[],
@@ -19,26 +23,20 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='FrameScope',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='FrameScope',
 )
