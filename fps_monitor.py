@@ -31,23 +31,32 @@ from tkinter import filedialog, messagebox, ttk
 APP_NAME = "FrameScope"
 SAMPLE_INTERVAL_SECONDS = 1.0
 MAX_VISIBLE_POINTS = 180
-TEMP_REFRESH_SECONDS = 5.0
 DEFAULT_SETTINGS = {
     "output_dir": "records",
     "language": "zh",
 }
-WINDOW_BG = "#0b0f14"
-PANEL_BG = "#121821"
-PANEL_RAISED_BG = "#171f2a"
-PANEL_BORDER = "#2b3644"
-TEXT_PRIMARY = "#f4f7fb"
-TEXT_MUTED = "#9daab8"
-ACCENT_GREEN = "#4ade80"
-ACCENT_BLUE = "#4ea1ff"
-ACCENT_AMBER = "#f6b44b"
-ACCENT_RED = "#ef6357"
-ACCENT_PURPLE = "#b985ff"
-ACCENT_CYAN = "#48d4c2"
+WINDOW_BG = "#07090d"
+PANEL_BG = "#0f141b"
+PANEL_RAISED_BG = "#151c26"
+PANEL_BORDER = "#232d3d"
+TEXT_PRIMARY = "#f8fafc"
+TEXT_MUTED = "#7f8ea3"
+ACCENT_GREEN = "#22c55e"
+ACCENT_BLUE = "#3b82f6"
+ACCENT_AMBER = "#f59e0b"
+ACCENT_RED = "#ef4444"
+ACCENT_PURPLE = "#a855f7"
+ACCENT_CYAN = "#06b6d4"
+CARD_HOVER_BG = "#1a2330"
+BTN_BLUE_BG = "#2563eb"
+BTN_BLUE_HOVER = "#3b82f6"
+BTN_BLUE_ACTIVE = "#1d4ed8"
+BTN_RED_BG = "#dc2626"
+BTN_RED_HOVER = "#ef4444"
+BTN_RED_ACTIVE = "#b91c1c"
+BTN_GHOST_BG = "#1e293b"
+BTN_GHOST_HOVER = "#334155"
+BTN_GHOST_BORDER = "#334155"
 UI_FONT_FAMILY = "Microsoft YaHei UI" if os.name == "nt" else "Segoe UI"
 MPL_FONT_FAMILIES = ["Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Segoe UI", "Arial", "sans-serif"]
 
@@ -261,14 +270,26 @@ def format_metric(value: float | None, suffix: str = "", precision: int = 0) -> 
     return f"{number:.{precision}f}{suffix}"
 
 
+MIN_FRAMES_FOR_PERCENTILE = 60
+SLIDING_WINDOW_FRAMES = 360
+TEMP_REFRESH_SECONDS = 2.0
+
+
 def low_fps_from_frame_times(frame_times_ms: Iterable[float | None], percentile: float = 0.01) -> float | None:
     clean = [value for value in (numeric_value(item) for item in frame_times_ms) if value is not None and value > 0]
-    if not clean:
+    if len(clean) < MIN_FRAMES_FOR_PERCENTILE:
         return None
-    slow_count = max(1, math.ceil(len(clean) * percentile))
-    slowest_frame_times = sorted(clean, reverse=True)[:slow_count]
-    average_frame_time = statistics.fmean(slowest_frame_times)
-    return round(1000.0 / average_frame_time, 2) if average_frame_time > 0 else None
+    sorted_ft = sorted(clean)
+    ft_percentile = 1.0 - percentile
+    index = (len(sorted_ft) - 1) * ft_percentile
+    lower_idx = int(math.floor(index))
+    upper_idx = int(math.ceil(index))
+    if lower_idx == upper_idx:
+        percentile_frame_time = sorted_ft[lower_idx]
+    else:
+        weight = index - lower_idx
+        percentile_frame_time = sorted_ft[lower_idx] * (1 - weight) + sorted_ft[upper_idx] * weight
+    return round(1000.0 / percentile_frame_time, 2) if percentile_frame_time > 0 else None
 
 
 def low_fps_from_fps_values(values: Iterable[float | None], percentile: float = 0.01) -> float | None:
@@ -280,14 +301,23 @@ def low_fps_from_fps_values(values: Iterable[float | None], percentile: float = 
     return low_fps_from_frame_times(frame_times, percentile)
 
 
-def low_fps_series(samples: Iterable["MetricSample"], percentile: float = 0.01) -> list[float | None]:
-    running_frame_times: list[float] = []
+def low_fps_series_from_frame_times(
+    frame_times_history: list[float],
+    frame_counts_at_samples: list[int],
+    percentile: float = 0.01,
+    use_sliding_window: bool = True,
+) -> list[float | None]:
     lows: list[float | None] = []
-    for sample in samples:
-        fps = numeric_value(sample.fps)
-        if fps is not None and fps > 0:
-            running_frame_times.append(1000.0 / fps)
-        lows.append(low_fps_from_frame_times(running_frame_times, percentile))
+    for count in frame_counts_at_samples:
+        if count == 0:
+            lows.append(None)
+            continue
+        if use_sliding_window:
+            start_idx = max(0, count - SLIDING_WINDOW_FRAMES)
+            window = frame_times_history[start_idx:count]
+        else:
+            window = frame_times_history[:count]
+        lows.append(low_fps_from_frame_times(window, percentile))
     return lows
 
 
@@ -308,7 +338,13 @@ class TemperatureReader:
         return self.last_value
 
     def _refresh_cpu_temp(self) -> None:
-        value = self._read_from_psutil() or self._read_from_hardware_monitor() or self._read_from_acpi()
+        value = (
+            self._read_from_psutil()
+            or self._read_from_hardware_monitor()
+            or self._read_from_acpi()
+        )
+        if value is not None and value < 20:
+            value = None
         with self._lock:
             self.last_value = value
             self.last_refresh = time.monotonic()
@@ -666,6 +702,7 @@ class MetricsRecorder:
         self.gpu_reader = NvidiaSmiReader()
         self.fps_reader = PresentMonReader(output_dir)
         self.samples: list[MetricSample] = []
+        self.frame_counts_at_samples: list[int] = []
         self.events: queue.Queue[MetricSample] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -695,6 +732,9 @@ class MetricsRecorder:
     def collect_once(self) -> MetricSample:
         now = datetime.now()
         gpu = self.gpu_reader.read()
+        with self.fps_reader._lock:
+            frame_count = len(self.fps_reader.frame_times_ms)
+        self.frame_counts_at_samples.append(frame_count)
         return MetricSample(
             timestamp=now.isoformat(timespec="seconds"),
             elapsed_s=round(time.monotonic() - self.started_at, 2),
@@ -716,11 +756,13 @@ class ReportWriter:
         output_dir: Path,
         samples: list[MetricSample],
         frame_times_ms: list[float],
+        frame_counts_at_samples: list[int],
         language: str = "zh",
     ) -> None:
         self.output_dir = output_dir
         self.samples = samples
         self.frame_times_ms = frame_times_ms
+        self.frame_counts_at_samples = frame_counts_at_samples
         self.language = language if language in I18N else "zh"
 
     def write_all(self) -> dict[str, str]:
@@ -836,7 +878,12 @@ class ReportWriter:
                 }
                 for item in key:
                     if item == "fps_low":
-                        values = low_fps_series(self.samples)
+                        values = low_fps_series_from_frame_times(
+                            self.frame_times_ms,
+                            self.frame_counts_at_samples,
+                            0.01,
+                            use_sliding_window=False,
+                        )
                     else:
                         values = [numeric_value(getattr(sample, item)) for sample in self.samples]
                     axis.plot(elapsed, values, color=colors[item], linewidth=2, label=labels[item])
@@ -880,23 +927,33 @@ class ReportWriter:
     body {{
       margin: 0;
       font-family: "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Segoe UI", Arial, sans-serif;
-      background: radial-gradient(circle at 20% 0%, #162235 0, transparent 30rem), var(--bg);
+      background: radial-gradient(circle at 15% 0%, #152033 0, transparent 35rem), var(--bg);
       color: var(--text);
+      -webkit-font-smoothing: antialiased;
     }}
-    main {{ width: min(1180px, calc(100% - 40px)); margin: 32px auto 48px; }}
-    header {{ display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }}
-    h1 {{ font-size: 34px; margin: 0 0 6px; letter-spacing: 0; }}
-    p {{ color: var(--muted); margin: 0; }}
-    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }}
-    .card {{ background: color-mix(in srgb, var(--panel) 92%, black); border: 1px solid var(--line); border-radius: 8px; padding: 18px; }}
-    .label {{ color: var(--muted); font-size: 13px; }}
-    .value {{ font-size: 28px; font-weight: 700; margin-top: 8px; }}
-    .chart {{ width: 100%; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; overflow: hidden; border-radius: 8px; }}
-    th, td {{ text-align: left; padding: 13px 14px; border-bottom: 1px solid var(--line); }}
-    th {{ color: var(--muted); font-weight: 600; background: {PANEL_BG}; }}
-    td {{ background: #101721; }}
-    @media (max-width: 900px) {{ .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} header {{ display: block; }} }}
+    main {{ width: min(1200px, calc(100% - 48px)); margin: 40px auto 56px; }}
+    header {{ display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }}
+    h1 {{ font-size: 36px; margin: 0 0 8px; letter-spacing: -0.02em; font-weight: 700; }}
+    p {{ color: var(--muted); margin: 0; font-size: 14px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }}
+    .card {{ 
+      background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 95%, black), color-mix(in srgb, var(--panel) 85%, black)); 
+      border: 1px solid var(--line); 
+      border-radius: 12px; 
+      padding: 22px; 
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    }}
+    .card:hover {{ border-color: var(--blue); transform: translateY(-2px); box-shadow: 0 8px 30px rgba(59, 130, 246, 0.15); }}
+    .label {{ color: var(--muted); font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }}
+    .value {{ font-size: 32px; font-weight: 700; margin-top: 10px; letter-spacing: -0.02em; }}
+    .chart {{ width: 100%; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }}
+    table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 24px; overflow: hidden; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 4px 20px rgba(0,0,0,0.15); }}
+    th, td {{ text-align: left; padding: 16px 18px; }}
+    th {{ color: var(--muted); font-weight: 600; background: var(--panel); font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }}
+    td {{ background: #0c1219; border-top: 1px solid var(--line); font-weight: 500; }}
+    tr:hover td {{ background: color-mix(in srgb, var(--panel) 70%, transparent); }}
+    @media (max-width: 900px) {{ .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} header {{ display: block; }} main {{ margin: 24px auto 32px; width: calc(100% - 32px); }} }}
   </style>
 </head>
 <body>
@@ -933,13 +990,29 @@ class ReportWriter:
 class MetricCard(ttk.Frame):
     def __init__(self, parent: tk.Widget, title: str, accent: str) -> None:
         super().__init__(parent, style="Card.TFrame")
+        self.accent_color = accent
         self.title = ttk.Label(self, text=title, style="CardTitle.TLabel")
         self.value = ttk.Label(self, text="--", style="CardValue.TLabel")
-        self.accent = tk.Frame(self, bg=accent, height=4)
+        self.accent = tk.Frame(self, bg=accent, height=3)
         self.columnconfigure(0, weight=1)
-        self.accent.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 14))
-        self.title.grid(row=1, column=0, sticky="w", padx=18)
-        self.value.grid(row=2, column=0, sticky="w", padx=18, pady=(7, 18))
+        self.accent.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 16))
+        self.title.grid(row=1, column=0, sticky="w", padx=20)
+        self.value.grid(row=2, column=0, sticky="w", padx=20, pady=(6, 20))
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        for child in (self.title, self.value, self.accent):
+            child.bind("<Enter>", self._on_enter)
+            child.bind("<Leave>", self._on_leave)
+
+    def _on_enter(self, event) -> None:
+        self.configure(style="CardHover.TFrame")
+        self.title.configure(background=CARD_HOVER_BG)
+        self.value.configure(background=CARD_HOVER_BG)
+
+    def _on_leave(self, event) -> None:
+        self.configure(style="Card.TFrame")
+        self.title.configure(background=PANEL_RAISED_BG)
+        self.value.configure(background=PANEL_RAISED_BG)
 
     def set_value(self, value: str) -> None:
         self.value.configure(text=value)
@@ -995,42 +1068,64 @@ class MonitorApp:
         style.configure(
             "Status.TLabel",
             background=PANEL_RAISED_BG,
-            foreground="#dce5ee",
-            padding=(14, 8),
+            foreground="#e2e8f0",
+            padding=(16, 9),
             borderwidth=1,
             relief="solid",
+            bordercolor=PANEL_BORDER,
+            font=(UI_FONT_FAMILY, 10, "medium"),
         )
-        style.configure("Card.TFrame", background=PANEL_RAISED_BG, relief="solid", borderwidth=1)
+        style.configure("Card.TFrame", background=PANEL_RAISED_BG, relief="solid", borderwidth=1, bordercolor=PANEL_BORDER)
+        style.configure("CardHover.TFrame", background=CARD_HOVER_BG, relief="solid", borderwidth=1, bordercolor=ACCENT_BLUE)
         style.configure("CardTitle.TLabel", background=PANEL_RAISED_BG, foreground=TEXT_MUTED, font=(UI_FONT_FAMILY, 10))
-        style.configure("CardValue.TLabel", background=PANEL_RAISED_BG, foreground=TEXT_PRIMARY, font=(UI_FONT_FAMILY, 26, "bold"))
+        style.configure("CardValue.TLabel", background=PANEL_RAISED_BG, foreground=TEXT_PRIMARY, font=(UI_FONT_FAMILY, 28, "bold"))
         style.configure(
             "Action.TButton",
-            background=ACCENT_BLUE,
+            background=BTN_BLUE_BG,
             foreground="#ffffff",
             borderwidth=0,
-            padding=(18, 11),
+            padding=(22, 12),
             font=(UI_FONT_FAMILY, 10, "bold"),
+            relief="flat",
+            focusthickness=0,
         )
-        style.map("Action.TButton", background=[("disabled", "#334154"), ("active", "#67b0ff")])
+        style.map(
+            "Action.TButton",
+            background=[("disabled", "#1e293b"), ("active", BTN_BLUE_HOVER), ("pressed", BTN_BLUE_ACTIVE)],
+            foreground=[("disabled", "#64748b")],
+        )
         style.configure(
             "Danger.TButton",
-            background=ACCENT_RED,
+            background=BTN_RED_BG,
             foreground="#ffffff",
             borderwidth=0,
-            padding=(18, 11),
+            padding=(22, 12),
             font=(UI_FONT_FAMILY, 10, "bold"),
+            relief="flat",
+            focusthickness=0,
         )
-        style.map("Danger.TButton", background=[("disabled", "#3d3032"), ("active", "#ff7b70")])
+        style.map(
+            "Danger.TButton",
+            background=[("disabled", "#1e293b"), ("active", BTN_RED_HOVER), ("pressed", BTN_RED_ACTIVE)],
+            foreground=[("disabled", "#64748b")],
+        )
         style.configure(
             "Ghost.TButton",
-            background=PANEL_RAISED_BG,
-            foreground="#dce5ee",
+            background=BTN_GHOST_BG,
+            foreground="#e2e8f0",
             borderwidth=1,
             relief="solid",
-            padding=(15, 11),
+            bordercolor=BTN_GHOST_BORDER,
+            padding=(18, 12),
             font=(UI_FONT_FAMILY, 10),
+            focusthickness=0,
         )
-        style.map("Ghost.TButton", background=[("disabled", "#18202a"), ("active", "#223044")])
+        style.map(
+            "Ghost.TButton",
+            background=[("disabled", "#0f172a"), ("active", BTN_GHOST_HOVER), ("pressed", "#0f172a")],
+            foreground=[("disabled", "#475569")],
+            bordercolor=[("active", "#475569")],
+        )
 
     def _build_ui(self) -> None:
         container = tk.Frame(self.root, bg=WINDOW_BG)
@@ -1082,12 +1177,11 @@ class MonitorApp:
             self.axes[1][1]: "memory",
         }
         axis_specs = [
-            (self.axes[0][0], [("fps", ACCENT_GREEN, "FPS"), ("fps_low", ACCENT_AMBER, "1% Low")]),
-            (self.axes[0][1], [("cpu_percent", ACCENT_BLUE, "CPU"), ("gpu_percent", ACCENT_PURPLE, "GPU")]),
-            (self.axes[1][0], [("cpu_temp_c", ACCENT_RED, "CPU"), ("gpu_temp_c", ACCENT_CYAN, "GPU")]),
-            (self.axes[1][1], [("memory_percent", ACCENT_AMBER, "RAM %"), ("gpu_memory_used_mb", "#85c1e9", "VRAM MB")]),
+            (self.axes[0][0], None, [("fps", ACCENT_GREEN, "FPS"), ("fps_low", ACCENT_AMBER, "1% Low")]),
+            (self.axes[0][1], None, [("cpu_percent", ACCENT_BLUE, "CPU"), ("gpu_percent", ACCENT_PURPLE, "GPU")]),
+            (self.axes[1][0], None, [("cpu_temp_c", ACCENT_RED, "CPU °C"), ("gpu_temp_c", ACCENT_CYAN, "GPU °C")]),
         ]
-        for axis, line_specs in axis_specs:
+        for axis, twin, line_specs in axis_specs:
             axis.set_facecolor(PANEL_BG)
             axis.grid(True, color=PANEL_BORDER, linewidth=0.8, alpha=0.7)
             axis.tick_params(colors=TEXT_MUTED)
@@ -1097,6 +1191,33 @@ class MonitorApp:
                 line, = axis.plot([], [], color=color, linewidth=2, label=label)
                 self.lines[key] = line
             axis.legend(facecolor=PANEL_BG, edgecolor=PANEL_BORDER, labelcolor="#dce5ee", loc="upper left")
+
+        mem_ax = self.axes[1][1]
+        mem_ax.set_facecolor(PANEL_BG)
+        mem_ax.grid(True, color=PANEL_BORDER, linewidth=0.8, alpha=0.7)
+        mem_ax.tick_params(axis='y', colors=ACCENT_AMBER)
+        mem_ax.tick_params(axis='x', colors=TEXT_MUTED)
+        for spine in mem_ax.spines.values():
+            spine.set_color(PANEL_BORDER)
+        line_ram, = mem_ax.plot([], [], color=ACCENT_AMBER, linewidth=2, label="RAM %")
+        self.lines["memory_percent"] = line_ram
+        mem_ax.set_ylim(0, 100)
+        mem_ax.set_ylabel("RAM 使用率(%)", color=ACCENT_AMBER, fontsize=9)
+
+        mem_ax2 = mem_ax.twinx()
+        self._mem_twin = mem_ax2
+        mem_ax2.set_facecolor(PANEL_BG)
+        mem_ax2.tick_params(axis='y', colors="#85c1e9")
+        for spine in mem_ax2.spines.values():
+            spine.set_color(PANEL_BORDER)
+        line_vram, = mem_ax2.plot([], [], color="#85c1e9", linewidth=2, label="VRAM MB")
+        self.lines["gpu_memory_used_mb"] = line_vram
+        mem_ax2.set_ylabel("VRAM 使用量(MB)", color="#85c1e9", fontsize=9)
+
+        lines1, labels1 = mem_ax.get_legend_handles_labels()
+        lines2, labels2 = mem_ax2.get_legend_handles_labels()
+        mem_ax.legend(lines1 + lines2, labels1 + labels2, facecolor=PANEL_BG, edgecolor=PANEL_BORDER, labelcolor="#dce5ee", loc="upper left")
+
         self.figure.tight_layout(pad=2)
         self.canvas = FigureCanvasTkAgg(self.figure, chart_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
@@ -1176,6 +1297,7 @@ class MonitorApp:
             self.session_dir,
             self.recorder.samples,
             self.recorder.fps_reader.frame_times_ms,
+            self.recorder.frame_counts_at_samples,
             self.language,
         )
         self.report_paths = writer.write_all()
@@ -1278,10 +1400,16 @@ class MonitorApp:
         if not self.visible_samples or not self.recorder:
             return
         latest = self.visible_samples[-1]
-        all_fps = [sample.fps for sample in self.recorder.samples if numeric_value(sample.fps) is not None]
         with self.recorder.fps_reader._lock:
             frame_times = list(self.recorder.fps_reader.frame_times_ms)
-        one_percent_low = low_fps_from_frame_times(frame_times, 0.01) or low_fps_from_fps_values(all_fps, 0.01)
+        if len(frame_times) >= SLIDING_WINDOW_FRAMES:
+            window = frame_times[-SLIDING_WINDOW_FRAMES:]
+        else:
+            window = frame_times
+        one_percent_low = low_fps_from_frame_times(window, 0.01)
+        if one_percent_low is None:
+            all_fps = [sample.fps for sample in self.recorder.samples if numeric_value(sample.fps) is not None]
+            one_percent_low = low_fps_from_fps_values(all_fps, 0.01)
         self.cards["fps"].set_value(format_metric(latest.fps, "", 1))
         self.cards["low"].set_value(format_metric(one_percent_low, "", 1))
         self.cards["cpu"].set_value(format_metric(latest.cpu_percent, "%", 0))
@@ -1290,20 +1418,39 @@ class MonitorApp:
         self.cards["gpu_temp"].set_value(format_metric(latest.gpu_temp_c, " C", 0))
 
     def _update_chart(self) -> None:
-        if not self.visible_samples:
+        if not self.visible_samples or not self.recorder:
             return
         x_values = [sample.elapsed_s for sample in self.visible_samples]
+        with self.recorder.fps_reader._lock:
+            all_frame_times = list(self.recorder.fps_reader.frame_times_ms)
+        total_samples = len(self.recorder.samples)
+        visible_count = len(self.visible_samples)
+        start_idx = total_samples - visible_count
+        frame_counts = self.recorder.frame_counts_at_samples[start_idx:total_samples] if start_idx >= 0 else []
         for key, line in self.lines.items():
             if key == "fps_low":
-                y_values = low_fps_series(self.visible_samples)
+                y_values = low_fps_series_from_frame_times(all_frame_times, frame_counts, 0.01, True)
             else:
                 y_values = [numeric_value(getattr(sample, key)) for sample in self.visible_samples]
             line.set_data(x_values, y_values)
-        for axis in self.axes.flat:
-            axis.relim()
-            axis.autoscale_view()
-            if x_values:
-                axis.set_xlim(max(0, x_values[-1] - MAX_VISIBLE_POINTS), max(MAX_VISIBLE_POINTS, x_values[-1]))
+
+        for i in range(2):
+            for j in range(2):
+                axis = self.axes[i][j]
+                axis.relim()
+                axis.autoscale_view()
+                if i == 1 and j == 1:
+                    axis.set_ylim(bottom=0)
+                    if hasattr(self, '_mem_twin'):
+                        self._mem_twin.relim()
+                        self._mem_twin.autoscale_view()
+                        self._mem_twin.set_ylim(bottom=0)
+                if i == 1 and j == 0:
+                    pass
+                if i == 0 and j == 1:
+                    axis.set_ylim(0, 100)
+                if x_values:
+                    axis.set_xlim(max(0, x_values[-1] - MAX_VISIBLE_POINTS), max(MAX_VISIBLE_POINTS, x_values[-1]))
         self.canvas.draw_idle()
 
     def open_records_dir(self) -> None:
@@ -1315,9 +1462,17 @@ class MonitorApp:
         if self.closed:
             return
         self.closed = True
-        if self.recording:
-            self.finish_recording()
-        self.root.destroy()
+        try:
+            if self.recording and self.recorder:
+                self.recorder.stop()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        import os
+        os._exit(0)
 
 
 def main() -> None:

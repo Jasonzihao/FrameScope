@@ -2,29 +2,61 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
 
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
-# PyInstaller
+# PyInstaller build output
 build/
 dist/
 *.manifest
 *.pyz
+*.spec.bak
 
-# Runtime data
+# Runtime generated data
 records/
 framescope_settings.json
+*.csv
+*.html
+
+# Node.js dependencies and lock
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Generated documents (docx, pptx)
+*.docx
+*.pptx
+*.pdf
+
+# Temporary scripts (generated for one-time use)
+create_docx.js
+create_pptx.js
+
+# Binary tools
+tools/**/*.exe
+*.exe
+*.dll
+*.so
+*.dylib
 
 # IDE and OS files
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Logs and temporary files
 *.log
 *.tmp
 *.bak
+*.cache

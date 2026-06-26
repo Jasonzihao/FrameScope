@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-python -m PyInstaller --noconfirm --onefile --windowed --clean --name FrameScope --add-binary "tools\PresentMon\PresentMon.exe;." --collect-binaries=python3 fps_monitor.py
+python -m PyInstaller --noconfirm --onefile --windowed --clean --name FrameScope --add-binary "tools\PresentMon\PresentMon.exe;." --collect-binaries=python3 fps_monitor.py --icon=app.ico
 if errorlevel 1 (
 echo.
 echo Build failed!

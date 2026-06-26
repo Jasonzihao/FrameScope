@@ -1,14 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_dynamic_libs
-
-binaries = [('tools\\PresentMon\\PresentMon.exe', '.')]
-binaries += collect_dynamic_libs('python3')
 
 
 a = Analysis(
     ['fps_monitor.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[('tools\\PresentMon\\PresentMon.exe', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
@@ -26,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='FrameScope',
+    name='fps_monitor',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -39,5 +35,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['app.ico'],
 )
